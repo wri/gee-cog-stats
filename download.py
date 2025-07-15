@@ -3,7 +3,12 @@ import os
 import subprocess
 import sys
 
-publisher_id = ''
+# Check if publisher_id is set
+if len(sys.argv) > 1:
+    publisher_id = sys.argv[1]
+else:
+    print('Please provide the publisher_id as a command line argument.')
+    sys.exit(1)
 
 # Check you are logged in to gcloud
 def gcloud_login():
