@@ -49,7 +49,7 @@ def combine_files(combined_filepath):
         file_count = 0
         for file in os.listdir(f'./data/{publisher_id}'):
             if file.startswith('earthengine_stats'):
-                with open(file, 'r') as infile:
+                with open(f'./data/{publisher_id}/{file}', 'r') as infile:
                     file_count += 1
                     for line in infile:
                         # Skip the header of the file after the first file
