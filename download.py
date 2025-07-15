@@ -2,6 +2,7 @@
 import os
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Check if publisher_id is set
 if len(sys.argv) > 1:
@@ -27,19 +28,41 @@ def download_index():
     subprocess.run(['gsutil', 'cp', index_path, f'./data/{publisher_id}/index.txt'])
 
 
-# Read lines of index.txt and download the files from gcs using gcloud
-def download_files():
+# Helper function to download a single file
+def download_single_file(line):
+    line = line.strip()
+    if not line:
+        return None
+    
+    # Get the filename
+    file = line.split('/')[-1]
+    file_path = f'./data/{publisher_id}/{file}'
+    
+    # Check if file exists
+    if os.path.exists(file_path):
+        return f'{file} already exists'
+    else:
+        try:
+            subprocess.run(['gsutil', 'cp', line, f'./data/{publisher_id}/'], check=True)
+            return f'Downloaded {line}'
+        except subprocess.CalledProcessError as e:
+            return f'Failed to download {line}: {e}'
+
+# Read lines of index.txt and download the files from gcs using gcloud (parallelized)
+def download_files(max_workers=5):
     with open(f'./data/{publisher_id}/index.txt', 'r') as f:
-        for line in f:
-            line = line.strip()
-            # Get the filename
-            file = line.split('/')[-1]
-            # Check if file exists
-            if os.path.exists(file):
-                print(f'{file} already exists')
-            elif line:
-                print(f'Downloading {line}')
-                subprocess.run(['gsutil', 'cp', line, f'./data/{publisher_id}/'])
+        lines = [line.strip() for line in f if line.strip()]
+    
+    # Use ThreadPoolExecutor for parallel downloads
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all download tasks
+        future_to_line = {executor.submit(download_single_file, line): line for line in lines}
+        
+        # Process completed downloads
+        for future in as_completed(future_to_line):
+            result = future.result()
+            if result:
+                print(result)
 
 combined_filepath = f'./data/{publisher_id}-combined.csv'
 
