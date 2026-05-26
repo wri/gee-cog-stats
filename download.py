@@ -18,10 +18,10 @@ else:
 
 # Check you are logged in to gcloud
 def gcloud_login():
-    result = subprocess.run(['gcloud','auth', 'print-access-token'], capture_output=True)
+    result = subprocess.run(['gcloud','auth', 'print-access-token'], capture_output=True, shell=True)
     if result.returncode != 0:
         try:
-            subprocess.run(['gcloud','auth', 'login'], check=True)
+            subprocess.run(['gcloud','auth', 'login'], check=True, shell=True)
         except subprocess.CalledProcessError:
             print('Failed to log in to gcloud. Please run `gcloud auth login` manually.')
             sys.exit(1)
@@ -32,7 +32,7 @@ def download_index():
     os.makedirs(f'./data/{publisher_id}', exist_ok=True)
 
     index_path = f'gs://earthengine-stats/providers/{publisher_id}/index.txt'
-    subprocess.run(['gcloud','storage', 'cp', index_path, f'./data/{publisher_id}/index.txt'], check=True)
+    subprocess.run(['gcloud','storage', 'cp', index_path, f'./data/{publisher_id}/index.txt'], check=True, shell=True)
 
 
 # Helper function to download a single file
@@ -50,7 +50,7 @@ def download_single_file(line):
         return f'{file} already exists'
     else:
         try:
-            subprocess.run(['gcloud','storage', 'cp', line, f'./data/{publisher_id}/'], check=True)
+            subprocess.run(['gcloud','storage', 'cp', line, f'./data/{publisher_id}/'], check=True, shell=True)
             return f'Downloaded {line}'
         except subprocess.CalledProcessError as e:
             return f'Failed to download {line}: {e}'
