@@ -20,7 +20,7 @@ uv run download.py <publisher_id>
 For example:
 
 ```sh
-uv run download.py wri
+uv run download.py landandcarbon
 ```
 
 Because `download.py` includes a uv shebang, you can also run it directly:
