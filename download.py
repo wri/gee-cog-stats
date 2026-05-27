@@ -96,6 +96,7 @@ def download_files(publisher_id, max_workers=5):
     with open(f'./data/{publisher_id}/index.txt', 'r') as f:
         lines = [line.strip() for line in f if line.strip()]
 
+    failures = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_line = {
             executor.submit(download_single_file, publisher_id, line): line
@@ -105,6 +106,10 @@ def download_files(publisher_id, max_workers=5):
             result = future.result()
             if result:
                 print(result)
+                if result.startswith('Failed'):
+                    failures.append(result)
+
+    return failures
 
 
 def combine_files(publisher_id, combined_filepath):
@@ -176,7 +181,10 @@ if __name__ == '__main__':
     if not args.no_auth:
         gcloud_login()
     download_index(args.publisher_id)
-    download_files(args.publisher_id)
+    failures = download_files(args.publisher_id)
+    if failures:
+        print(f'{len(failures)} file(s) failed to download — aborting.')
+        sys.exit(1)
     combine_files(args.publisher_id, combined_filepath)
     sort_file(combined_filepath)
 

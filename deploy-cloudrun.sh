@@ -90,18 +90,20 @@ gcloud run jobs deploy "$JOB_NAME" \
 echo "==> Configuring Cloud Scheduler..."
 JOB_URI="https://$REGION-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/$PROJECT_ID/jobs/$JOB_NAME:run"
 
-gcloud scheduler jobs delete "$SCHEDULER_JOB" \
-  --location="$REGION" \
-  --project="$PROJECT_ID" \
-  --quiet 2>/dev/null || true
-
-gcloud scheduler jobs create http "$SCHEDULER_JOB" \
-  --location="$REGION" \
-  --schedule="$SCHEDULE" \
-  --uri="$JOB_URI" \
-  --message-body='{}' \
-  --oauth-service-account-email="$SA_EMAIL" \
+SCHEDULER_ARGS=(
+  --location="$REGION"
+  --schedule="$SCHEDULE"
+  --uri="$JOB_URI"
+  --message-body='{}'
+  --oauth-service-account-email="$SA_EMAIL"
   --project="$PROJECT_ID"
+)
+
+if gcloud scheduler jobs describe "$SCHEDULER_JOB" --location="$REGION" --project="$PROJECT_ID" &>/dev/null; then
+  gcloud scheduler jobs update http "$SCHEDULER_JOB" "${SCHEDULER_ARGS[@]}"
+else
+  gcloud scheduler jobs create http "$SCHEDULER_JOB" "${SCHEDULER_ARGS[@]}"
+fi
 
 echo ""
 echo "Done. To run immediately:"
