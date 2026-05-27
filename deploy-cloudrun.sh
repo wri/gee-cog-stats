@@ -4,7 +4,7 @@
 #
 # Required env vars (or edit defaults below):
 #   GCP_PROJECT      – your GCP project ID
-#   PUBLISHER_ID     – publisher to download (default: wri)
+#   PUBLISHER_ID     – publisher to download (required, e.g. landandcarbon)
 #   BIGQUERY_TABLE   – optional, PROJECT.DATASET.TABLE
 #   REGION           – Cloud Run region (default: us-central1)
 #   SCHEDULE         – cron expression (default: daily at 6 AM UTC)
@@ -12,7 +12,7 @@
 set -euo pipefail
 
 PROJECT_ID="${GCP_PROJECT:?Set GCP_PROJECT to your project ID}"
-PUBLISHER_ID="${PUBLISHER_ID:-wri}"
+PUBLISHER_ID="${PUBLISHER_ID:?Set PUBLISHER_ID to the publisher to download (e.g. landandcarbon)}"
 BIGQUERY_TABLE="${BIGQUERY_TABLE:-}"
 REGION="${REGION:-us-central1}"
 SCHEDULE="${SCHEDULE:-0 6 * * *}"
