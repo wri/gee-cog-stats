@@ -11,6 +11,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
@@ -21,6 +22,11 @@ def parse_args():
         '--bigquery',
         metavar='PROJECT.DATASET.TABLE',
         help='Push combined CSV to this BigQuery table, creating it if needed',
+    )
+    parser.add_argument(
+        '--no-auth',
+        action='store_true',
+        help='Skip interactive gcloud auth (use when running in CI/cloud with a pre-configured service account)',
     )
     return parser.parse_args()
 
@@ -52,7 +58,16 @@ def gcloud_login():
 def download_index(publisher_id):
     os.makedirs(f'./data/{publisher_id}', exist_ok=True)
     index_path = f'gs://earthengine-stats/providers/{publisher_id}/index.txt'
-    subprocess.run(['gcloud','storage', 'cp', index_path, f'./data/{publisher_id}/index.txt'], check=True, shell=_SHELL)
+    local_path = f'./data/{publisher_id}/index.txt'
+    for attempt in range(3):
+        try:
+            subprocess.run(['gcloud', 'storage', 'cp', index_path, local_path], check=True, shell=_SHELL, timeout=15)
+            return
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            os.remove(local_path) if os.path.exists(local_path) else None
+            if attempt == 2:
+                raise
+            time.sleep(2 ** attempt)
 
 
 def download_single_file(publisher_id, line):
@@ -65,12 +80,16 @@ def download_single_file(publisher_id, line):
 
     if os.path.exists(file_path):
         return f'{file} already exists'
-    else:
+
+    for attempt in range(3):
         try:
-            subprocess.run(['gcloud','storage', 'cp', line, f'./data/{publisher_id}/'], check=True, shell=_SHELL)
+            subprocess.run(['gcloud', 'storage', 'cp', line, f'./data/{publisher_id}/'], check=True, shell=_SHELL, timeout=15)
             return f'Downloaded {line}'
-        except subprocess.CalledProcessError as e:
-            return f'Failed to download {line}: {e}'
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            os.remove(file_path) if os.path.exists(file_path) else None
+            if attempt == 2:
+                return f'Failed to download {line}: {e}'
+            time.sleep(2 ** attempt)  # 1s, 2s
 
 
 def download_files(publisher_id, max_workers=5):
@@ -154,7 +173,8 @@ if __name__ == '__main__':
     args = parse_args()
     combined_filepath = f'./data/{args.publisher_id}-combined.csv'
 
-    gcloud_login()
+    if not args.no_auth:
+        gcloud_login()
     download_index(args.publisher_id)
     download_files(args.publisher_id)
     combine_files(args.publisher_id, combined_filepath)

@@ -54,3 +54,31 @@ uv run download.py landandcarbon --bigquery landandcarbon.gee_cog_stats.30_day_a
 ```
 
 The BigQuery client uses your active `gcloud` credentials, so no additional authentication is required beyond the login step.
+
+## Running on a schedule
+
+`deploy-cloudrun.sh` builds a Docker image, creates a Cloud Run Job, and sets up a Cloud Scheduler trigger. Run it once to deploy; re-run to update the image or schedule.
+
+```sh
+GCP_PROJECT=<your-gcp-project> \
+PUBLISHER_ID=<publisher-id> \
+BIGQUERY_TABLE=<your-gcp-project>.<dataset>.<table> \
+./deploy-cloudrun.sh
+```
+
+For example, to deploy for Land & Carbon:
+
+```sh
+GCP_PROJECT=landandcarbon \
+PUBLISHER_ID=landandcarbon \
+BIGQUERY_TABLE=landandcarbon.gee_cog_stats.30_day_active_users \
+./deploy-cloudrun.sh
+```
+
+The script creates all required GCP resources (Artifact Registry repo, service account, IAM bindings, Cloud Run Job, Cloud Scheduler job). To run the job immediately after deploying:
+
+```sh
+gcloud run jobs execute gee-cog-stats --region us-central1 --project landandcarbon
+```
+
+Set `REGION` or `SCHEDULE` environment variables to override the defaults (`us-central1` and `0 6 * * *`). Run the deploy script once per publisher to set up independent jobs for each.
