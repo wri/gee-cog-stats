@@ -44,3 +44,13 @@ gcloud auth login
 ```
 
 Downloaded files are skipped when they already exist locally, so it is safe to rerun the script for the same publisher ID.
+
+## Pushing to BigQuery
+
+Pass `--bigquery PROJECT.DATASET.TABLE` to load the combined CSV into a BigQuery table after processing. The dataset and table are created automatically if they do not already exist. Re-running overwrites the table with the latest data.
+
+```sh
+uv run download.py landandcarbon --bigquery landandcarbon.gee_cog_stats.30_day_active_users
+```
+
+The BigQuery client uses your active `gcloud` credentials, so no additional authentication is required beyond the login step.

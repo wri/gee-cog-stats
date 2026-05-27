@@ -1,80 +1,93 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.9"
-# dependencies = []
+# dependencies = [
+#   "google-cloud-bigquery",
+# ]
 # ///
 
+import argparse
 import os
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# Check if publisher_id is set
-if len(sys.argv) > 1:
-    publisher_id = sys.argv[1]
-else:
-    print('Please provide the publisher_id as a command line argument.')
-    sys.exit(1)
 
-# Check you are logged in to gcloud
+def parse_args():
+    parser = argparse.ArgumentParser(description='Download GEE COG stats for a publisher')
+    parser.add_argument('publisher_id', help='Publisher ID (e.g. wri)')
+    parser.add_argument(
+        '--bigquery',
+        metavar='PROJECT.DATASET.TABLE',
+        help='Push combined CSV to this BigQuery table, creating it if needed',
+    )
+    return parser.parse_args()
+
+
+_SHELL = sys.platform == 'win32'
+
+
 def gcloud_login():
-    result = subprocess.run(['gcloud','auth', 'print-access-token'], capture_output=True, shell=True)
+    result = subprocess.run(['gcloud', 'auth', 'print-access-token'], capture_output=True, shell=_SHELL)
     if result.returncode != 0:
         try:
-            subprocess.run(['gcloud','auth', 'login'], check=True, shell=True)
+            subprocess.run(['gcloud', 'auth', 'login'], check=True, shell=_SHELL)
         except subprocess.CalledProcessError:
             print('Failed to log in to gcloud. Please run `gcloud auth login` manually.')
             sys.exit(1)
 
-# Download index.txt file from gcs
-def download_index():
-    # If data directory does not exist, create it
+    adc_result = subprocess.run(
+        ['gcloud', 'auth', 'application-default', 'print-access-token'],
+        capture_output=True, shell=_SHELL
+    )
+    if adc_result.returncode != 0:
+        try:
+            subprocess.run(['gcloud', 'auth', 'application-default', 'login'], check=True, shell=_SHELL)
+        except subprocess.CalledProcessError:
+            print('Failed to set up application default credentials. Please run `gcloud auth application-default login` manually.')
+            sys.exit(1)
+
+
+def download_index(publisher_id):
     os.makedirs(f'./data/{publisher_id}', exist_ok=True)
-
     index_path = f'gs://earthengine-stats/providers/{publisher_id}/index.txt'
-    subprocess.run(['gcloud','storage', 'cp', index_path, f'./data/{publisher_id}/index.txt'], check=True, shell=True)
+    subprocess.run(['gcloud','storage', 'cp', index_path, f'./data/{publisher_id}/index.txt'], check=True, shell=_SHELL)
 
 
-# Helper function to download a single file
-def download_single_file(line):
+def download_single_file(publisher_id, line):
     line = line.strip()
     if not line:
         return None
-    
-    # Get the filename
+
     file = line.split('/')[-1]
     file_path = f'./data/{publisher_id}/{file}'
-    
-    # Check if file exists
+
     if os.path.exists(file_path):
         return f'{file} already exists'
     else:
         try:
-            subprocess.run(['gcloud','storage', 'cp', line, f'./data/{publisher_id}/'], check=True, shell=True)
+            subprocess.run(['gcloud','storage', 'cp', line, f'./data/{publisher_id}/'], check=True, shell=_SHELL)
             return f'Downloaded {line}'
         except subprocess.CalledProcessError as e:
             return f'Failed to download {line}: {e}'
 
-# Read lines of index.txt and download the files from gcs using gcloud (parallelized)
-def download_files(max_workers=5):
+
+def download_files(publisher_id, max_workers=5):
     with open(f'./data/{publisher_id}/index.txt', 'r') as f:
         lines = [line.strip() for line in f if line.strip()]
-    
-    # Use ThreadPoolExecutor for parallel downloads
+
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Submit all download tasks
-        future_to_line = {executor.submit(download_single_file, line): line for line in lines}
-        
-        # Process completed downloads
+        future_to_line = {
+            executor.submit(download_single_file, publisher_id, line): line
+            for line in lines
+        }
         for future in as_completed(future_to_line):
             result = future.result()
             if result:
                 print(result)
 
-combined_filepath = f'./data/{publisher_id}-combined.csv'
 
-# Combine all files into a single file
-def combine_files(combined_filepath):
+def combine_files(publisher_id, combined_filepath):
     with open(combined_filepath, 'w') as outfile:
         file_count = 0
         for file in os.listdir(f'./data/{publisher_id}'):
@@ -82,36 +95,65 @@ def combine_files(combined_filepath):
                 with open(f'./data/{publisher_id}/{file}', 'r') as infile:
                     file_count += 1
                     for line in infile:
-                        # Skip the header of the file after the first file
                         if file_count > 1 and line.startswith('Interval'):
                             continue
                         outfile.write(line)
         print(f'Combined {file_count} files into {combined_filepath}')
 
 
-# Sort the combined file leaving header as is
 def sort_file(combined_filepath):
     with open(combined_filepath, 'r') as file:
-            header = file.readline().strip()
-            # Replace Dataset with Folder
-            header = header.replace('Dataset', 'Folder,Project,Type,Product,Version,ImageCollection')
-            header = header.replace('Interval', 'Start,End')
-            lines = file.readlines()
-            # Replace first / in lines with ,
-            lines = [line.replace('/', ',') for line in lines]
-            sorted_lines = sorted(lines)
+        header = file.readline().strip()
+        header = header.replace('Dataset', 'Folder,Project,Type,Product,Version,ImageCollection')
+        header = header.replace('Interval', 'Start,End')
+        lines = file.readlines()
+        lines = [line.replace('/', ',') for line in lines]
+        sorted_lines = sorted(lines)
 
     with open(combined_filepath, 'w') as file:
         file.write(header + '\n')
         file.writelines(sorted_lines)
 
 
+def push_to_bigquery(combined_filepath, table_ref):
+    from google.cloud import bigquery
 
+    parts = table_ref.split('.')
+    if len(parts) != 3:
+        print(f'Invalid BigQuery table reference "{table_ref}". Expected PROJECT.DATASET.TABLE')
+        sys.exit(1)
+
+    project_id, dataset_id, table_id = parts
+    client = bigquery.Client(project=project_id)
+
+    dataset = bigquery.Dataset(f'{project_id}.{dataset_id}')
+    client.create_dataset(dataset, exists_ok=True)
+
+    table_full_ref = f'{project_id}.{dataset_id}.{table_id}'
+    job_config = bigquery.LoadJobConfig(
+        source_format=bigquery.SourceFormat.CSV,
+        skip_leading_rows=1,
+        autodetect=True,
+        write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+    )
+
+    with open(combined_filepath, 'rb') as f:
+        load_job = client.load_table_from_file(f, table_full_ref, job_config=job_config)
+
+    load_job.result()
+    table = client.get_table(table_full_ref)
+    print(f'Loaded {table.num_rows} rows into {table_full_ref}')
 
 
 if __name__ == '__main__':
+    args = parse_args()
+    combined_filepath = f'./data/{args.publisher_id}-combined.csv'
+
     gcloud_login()
-    download_index()
-    download_files()
-    combine_files(combined_filepath)
+    download_index(args.publisher_id)
+    download_files(args.publisher_id)
+    combine_files(args.publisher_id, combined_filepath)
     sort_file(combined_filepath)
+
+    if args.bigquery:
+        push_to_bigquery(combined_filepath, args.bigquery)
