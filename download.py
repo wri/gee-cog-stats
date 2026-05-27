@@ -8,6 +8,7 @@
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -104,10 +105,14 @@ def combine_files(publisher_id, combined_filepath):
 def sort_file(combined_filepath):
     with open(combined_filepath, 'r') as file:
         header = file.readline().strip()
-        header = header.replace('Dataset', 'Folder,Project,Type,Product,Version,ImageCollection')
         header = header.replace('Interval', 'Start,End')
+        # Sanitize column names for BigQuery/Data Studio compatibility:
+        cols = header.split(',')
+        cols = [re.sub(r'[^a-zA-Z0-9]+', '_', col).strip('_') for col in cols]  # replace special chars with _
+        cols = [f'_{col}' if col and col[0].isdigit() else col for col in cols]  # BQ field names can't start with a digit
+        header = ','.join(cols)
         lines = file.readlines()
-        lines = [line.replace('/', ',') for line in lines]
+        lines = [line.replace('/', ',', 1) for line in lines] # replace first slash with comma to split Interval into Start and End
         sorted_lines = sorted(lines)
 
     with open(combined_filepath, 'w') as file:
