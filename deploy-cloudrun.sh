@@ -22,7 +22,7 @@ IMAGE="$REGION-docker.pkg.dev/$PROJECT_ID/gee-cog-stats/downloader"
 SCHEDULER_JOB="$JOB_NAME-daily"
 
 # Build job args list
-JOB_ARGS="$PUBLISHER_ID,--no-auth"
+JOB_ARGS="$PUBLISHER_ID,--no-auth,--cache-bucket,wri-lcl-logs/$JOB_NAME,--max-workers,1"
 if [ -n "$BIGQUERY_TABLE" ]; then
   JOB_ARGS="$JOB_ARGS,--bigquery,$BIGQUERY_TABLE"
 fi
@@ -68,6 +68,11 @@ gcloud projects add-iam-policy-binding "$PROJECT_ID" \
   --member="serviceAccount:$SA_EMAIL" \
   --role="roles/run.invoker" --condition=None --quiet --format=none
 
+# Write access to the GCS cache bucket
+gcloud storage buckets add-iam-policy-binding gs://wri-lcl-logs \
+  --member="serviceAccount:$SA_EMAIL" \
+  --role="roles/storage.objectAdmin"
+
 # --- 3. Build and push image ---
 echo "==> Building and pushing Docker image..."
 gcloud builds submit \
@@ -81,7 +86,6 @@ gcloud run jobs deploy "$JOB_NAME" \
   --region "$REGION" \
   --service-account "$SA_EMAIL" \
   --args "$JOB_ARGS" \
-  --memory 2Gi \
   --max-retries 1 \
   --task-timeout 1200 \
   --project="$PROJECT_ID"
