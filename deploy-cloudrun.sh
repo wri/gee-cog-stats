@@ -5,7 +5,7 @@
 # Required env vars (or edit defaults below):
 #   GCP_PROJECT      – your GCP project ID
 #   PUBLISHER_ID     – publisher to download (required, e.g. landandcarbon)
-#   BIGQUERY_TABLE   – optional, PROJECT.DATASET.TABLE
+#   BIGQUERY_TABLE   – BigQuery target table, PROJECT.DATASET.TABLE
 #   REGION           – Cloud Run region (default: us-central1)
 #   SCHEDULE         – cron expression (default: daily at 6 AM UTC)
 
@@ -13,7 +13,7 @@ set -euo pipefail
 
 PROJECT_ID="${GCP_PROJECT:?Set GCP_PROJECT to your project ID}"
 PUBLISHER_ID="${PUBLISHER_ID:?Set PUBLISHER_ID to the publisher to download (e.g. landandcarbon)}"
-BIGQUERY_TABLE="${BIGQUERY_TABLE:-}"
+BIGQUERY_TABLE="${BIGQUERY_TABLE:?Set BIGQUERY_TABLE to PROJECT.DATASET.TABLE}"
 REGION="${REGION:-us-central1}"
 SCHEDULE="${SCHEDULE:-0 6 * * *}"
 SA_NAME="gee-stats-runner"
@@ -22,16 +22,13 @@ IMAGE="$REGION-docker.pkg.dev/$PROJECT_ID/gee-cog-stats/downloader"
 SCHEDULER_JOB="$JOB_NAME-daily"
 
 # Build job args list
-JOB_ARGS="$PUBLISHER_ID,--no-auth"
-if [ -n "$BIGQUERY_TABLE" ]; then
-  JOB_ARGS="$JOB_ARGS,--bigquery,$BIGQUERY_TABLE"
-fi
+JOB_ARGS="$PUBLISHER_ID,--no-auth,--incremental,--bigquery,$BIGQUERY_TABLE"
 
 echo "==> Project:   $PROJECT_ID"
 echo "==> Region:    $REGION"
 echo "==> Publisher: $PUBLISHER_ID"
 echo "==> Schedule:  $SCHEDULE"
-[ -n "$BIGQUERY_TABLE" ] && echo "==> BigQuery:  $BIGQUERY_TABLE"
+echo "==> BigQuery:  $BIGQUERY_TABLE"
 echo ""
 
 # --- 1. Artifact Registry repo ---
@@ -54,14 +51,12 @@ gcloud projects add-iam-policy-binding "$PROJECT_ID" \
   --member="serviceAccount:$SA_EMAIL" \
   --role="roles/storage.objectViewer" --condition=None --quiet --format=none
 
-if [ -n "$BIGQUERY_TABLE" ]; then
-  gcloud projects add-iam-policy-binding "$PROJECT_ID" \
-    --member="serviceAccount:$SA_EMAIL" \
-    --role="roles/bigquery.dataEditor" --condition=None --quiet --format=none
-  gcloud projects add-iam-policy-binding "$PROJECT_ID" \
-    --member="serviceAccount:$SA_EMAIL" \
-    --role="roles/bigquery.jobUser" --condition=None --quiet --format=none
-fi
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+  --member="serviceAccount:$SA_EMAIL" \
+  --role="roles/bigquery.dataEditor" --condition=None --quiet --format=none
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+  --member="serviceAccount:$SA_EMAIL" \
+  --role="roles/bigquery.jobUser" --condition=None --quiet --format=none
 
 # Cloud Scheduler needs permission to invoke Cloud Run Jobs
 gcloud projects add-iam-policy-binding "$PROJECT_ID" \

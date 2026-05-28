@@ -54,9 +54,26 @@ uv run download.py landandcarbon --bigquery landandcarbon.gee_cog_stats.30_day_a
 
 The BigQuery client uses your active `gcloud` credentials, so no additional authentication is required beyond the login step.
 
+## Incremental BigQuery ingestion
+
+Pass `--incremental --bigquery PROJECT.DATASET.TABLE` to ingest only new files from the publisher index into BigQuery:
+
+```sh
+uv run download.py landandcarbon \
+  --incremental \
+  --bigquery landandcarbon.gee_cog_stats.30_day_active_users
+```
+
+Incremental mode uses two metadata tables next to the target table:
+
+- `<table>__index_state` stores the last seen GCS generation for `index.txt`.
+- `<table>__processed_files` tracks source files that have already been loaded.
+
+If the index generation has not changed, the script exits without downloading or parsing the index. On the first incremental run, the script rebuilds the target table once from the full index and records all indexed files as processed. Later runs load only newly indexed files and merge rows by `Start`, `End`, and `Dataset`.
+
 ## Running on a schedule
 
-`deploy-cloudrun.sh` builds a Docker image, creates a Cloud Run Job, and sets up a Cloud Scheduler trigger. Run it once to deploy; re-run to update the image or schedule.
+`deploy-cloudrun.sh` builds a Docker image, creates a Cloud Run Job, and sets up a Cloud Scheduler trigger. Scheduled runs use incremental BigQuery ingestion, so `BIGQUERY_TABLE` is required. Run it once to deploy; re-run to update the image or schedule.
 
 ```sh
 GCP_PROJECT=<your-gcp-project> \
