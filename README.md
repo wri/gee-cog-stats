@@ -8,7 +8,6 @@ If you have created a COG back GEE asset, and requested statistics, this project
 - Python 3.9 or newer
 - Google Cloud CLI tools for local authentication and deployment
 - Access to `gs://earthengine-stats/providers/<publisher_id>/`
-  - Managed via wri-lcl@googlegroups.com by Chris Rowe
 
 ## GCP services used
 
