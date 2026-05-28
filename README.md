@@ -6,8 +6,21 @@ If you have created a COG back GEE asset, and requested statistics, this project
 
 - `uv`
 - Python 3.9 or newer
-- Google Cloud CLI tools, including `gcloud` and `gsutil`
+- Google Cloud CLI tools for local authentication and deployment
 - Access to `gs://earthengine-stats/providers/<publisher_id>/`
+  - Managed via wri-lcl@googlegroups.com by Chris Rowe
+
+## GCP services used
+
+| Service | Purpose | Managed by | Cost label |
+|---|---|---|---|
+| Cloud Storage | Reads source stats files from `gs://earthengine-stats/` | Owned by Google | N/A |
+| BigQuery | Stores the combined stats table and incremental state | `download.py` | Dataset and all jobs labeled `app=gee-cog-stats` |
+| Cloud Run Jobs | Executes the download script on a schedule | `deploy-cloudrun.sh` | Labeled `app=gee-cog-stats` |
+| Cloud Scheduler | Triggers the Cloud Run Job daily | `deploy-cloudrun.sh` | Not supported — no label API |
+| Artifact Registry | Stores the Docker image | `deploy-cloudrun.sh` | Labeled `app=gee-cog-stats` |
+| Cloud Build | Builds and pushes the Docker image | `deploy-cloudrun.sh` | Not supported — no label API |
+| IAM | Service account with scoped roles for the above | `deploy-cloudrun.sh` | No cost |
 
 ## Usage
 
@@ -32,10 +45,9 @@ Because `download.py` includes a uv shebang, you can also run it directly:
 The script will:
 
 1. Check that you are logged in to Google Cloud.
-2. Download `gs://earthengine-stats/providers/<publisher_id>/index.txt` to `data/<publisher_id>/index.txt`.
-3. Download each statistics file listed in `index.txt` into `data/<publisher_id>/`.
-4. Combine the downloaded `earthengine_stats*` files into `data/<publisher_id>-combined.csv`.
-5. Sort the combined CSV and expand the `Dataset` and `Interval` columns into more specific fields.
+2. Read `gs://earthengine-stats/providers/<publisher_id>/index.txt` and save a copy to `data/<publisher_id>/index.txt`.
+3. Stream each listed `earthengine_stats*` file from GCS into `data/<publisher_id>-combined.csv`.
+4. Sort the combined CSV and expand the `Dataset` and `Interval` columns into more specific fields.
 
 If you are not already logged in, the script runs:
 
@@ -43,7 +55,7 @@ If you are not already logged in, the script runs:
 gcloud auth login
 ```
 
-Downloaded files are skipped when they already exist locally, so it is safe to rerun the script for the same publisher ID.
+The script rebuilds the combined CSV from the current GCS index on each run, so it is safe to rerun for the same publisher ID.
 
 ## Pushing to BigQuery
 
@@ -54,3 +66,59 @@ uv run download.py landandcarbon --bigquery landandcarbon.gee_cog_stats.30_day_a
 ```
 
 The BigQuery client uses your active `gcloud` credentials, so no additional authentication is required beyond the login step.
+
+## Incremental BigQuery ingestion
+
+Pass `--incremental --bigquery PROJECT.DATASET.TABLE` to ingest only new files from the publisher index into BigQuery:
+
+```sh
+uv run download.py landandcarbon \
+  --incremental \
+  --bigquery landandcarbon.gee_cog_stats.30_day_active_users
+```
+
+Incremental mode uses two metadata tables next to the target table:
+
+- `<table>__index_state` stores the last seen GCS generation for `index.txt`.
+- `<table>__processed_files` tracks source files that have already been loaded.
+
+If the index generation has not changed, the script exits without downloading or parsing the index. On the first incremental run, the script rebuilds the target table once from the full index and records all indexed files as processed. Later runs load only newly indexed files and merge rows by `Start`, `End`, and `Dataset`.
+
+## Running on a schedule
+
+`deploy-cloudrun.sh` builds a Docker image, creates a Cloud Run Job, and sets up a Cloud Scheduler trigger. Scheduled runs use incremental BigQuery ingestion, so `BIGQUERY_TABLE` is required. Run it once to deploy; re-run to update the image or schedule.
+
+```sh
+GCP_PROJECT=<your-gcp-project> \
+PUBLISHER_ID=<publisher-id> \
+BIGQUERY_TABLE=<your-gcp-project>.<dataset>.<table> \
+./deploy-cloudrun.sh
+```
+
+For example, to deploy for Land & Carbon:
+
+```sh
+GCP_PROJECT=landandcarbon \
+PUBLISHER_ID=landandcarbon \
+BIGQUERY_TABLE=landandcarbon.gee_cog_stats.30_day_active_users \
+./deploy-cloudrun.sh
+```
+
+The script creates all required GCP resources (Artifact Registry repo, service account, IAM bindings, Cloud Run Job, Cloud Scheduler job). To run the job immediately after deploying:
+
+```sh
+gcloud run jobs execute gee-cog-stats --region us-central1 --project landandcarbon
+```
+
+Set `REGION` or `SCHEDULE` environment variables to override the defaults (`us-central1` and `0 6 * * *`). Run the deploy script once per publisher to set up independent jobs for each.
+
+
+## Cost monitoring
+
+All GCP resources created by this pipeline are labeled `app=gee-cog-stats`. To see pipeline costs in the GCP Console:
+
+1. Go to **Billing → Reports**
+2. Under **Labels**, add a filter: key `app`, value `gee-cog-stats`
+
+This breaks down costs by service for just this pipeline.
+
