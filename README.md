@@ -8,6 +8,19 @@ If you have created a COG back GEE asset, and requested statistics, this project
 - Python 3.9 or newer
 - Google Cloud CLI tools for local authentication and deployment
 - Access to `gs://earthengine-stats/providers/<publisher_id>/`
+  - Managed via wri-lcl@googlegroups.com by Chris Rowe
+
+## GCP services used
+
+| Service | Purpose | Managed by | Cost label |
+|---|---|---|---|
+| Cloud Storage | Reads source stats files from `gs://earthengine-stats/` | Owned by Google | N/A |
+| BigQuery | Stores the combined stats table and incremental state | `download.py` | Dataset and all jobs labeled `app=gee-cog-stats` |
+| Cloud Run Jobs | Executes the download script on a schedule | `deploy-cloudrun.sh` | Labeled `app=gee-cog-stats` |
+| Cloud Scheduler | Triggers the Cloud Run Job daily | `deploy-cloudrun.sh` | Not supported — no label API |
+| Artifact Registry | Stores the Docker image | `deploy-cloudrun.sh` | Labeled `app=gee-cog-stats` |
+| Cloud Build | Builds and pushes the Docker image | `deploy-cloudrun.sh` | Not supported — no label API |
+| IAM | Service account with scoped roles for the above | `deploy-cloudrun.sh` | No cost |
 
 ## Usage
 
@@ -98,3 +111,14 @@ gcloud run jobs execute gee-cog-stats --region us-central1 --project landandcarb
 ```
 
 Set `REGION` or `SCHEDULE` environment variables to override the defaults (`us-central1` and `0 6 * * *`). Run the deploy script once per publisher to set up independent jobs for each.
+
+
+## Cost monitoring
+
+All GCP resources created by this pipeline are labeled `app=gee-cog-stats`. To see pipeline costs in the GCP Console:
+
+1. Go to **Billing → Reports**
+2. Under **Labels**, add a filter: key `app`, value `gee-cog-stats`
+
+This breaks down costs by service for just this pipeline.
+

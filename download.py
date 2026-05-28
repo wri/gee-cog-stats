@@ -249,6 +249,12 @@ def quoted_field(name):
     return f'`{name.replace("`", "``")}`'
 
 
+def _label_dataset(client, dataset_ref):
+    dataset = client.get_dataset(dataset_ref)
+    dataset.labels = {**dataset.labels, 'app': 'gee-cog-stats'}
+    client.update_dataset(dataset, ['labels'])
+
+
 def load_combined_to_bigquery(client, combined_filepath, table_ref):
     from google.cloud import bigquery
 
@@ -256,6 +262,7 @@ def load_combined_to_bigquery(client, combined_filepath, table_ref):
 
     dataset = bigquery.Dataset(f'{project_id}.{dataset_id}')
     client.create_dataset(dataset, exists_ok=True)
+    _label_dataset(client, f'{project_id}.{dataset_id}')
 
     table_full_ref = table_id(project_id, dataset_id, target_table_id)
     job_config = bigquery.LoadJobConfig(
@@ -263,6 +270,7 @@ def load_combined_to_bigquery(client, combined_filepath, table_ref):
         skip_leading_rows=1,
         autodetect=True,
         write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+        labels={'app': 'gee-cog-stats'},
     )
 
     with open(combined_filepath, 'rb') as f:
@@ -301,6 +309,7 @@ def ensure_incremental_tables(client, table_ref):
     refs = metadata_table_refs(table_ref)
     dataset = bigquery.Dataset(f'{refs["project_id"]}.{refs["dataset_id"]}')
     client.create_dataset(dataset, exists_ok=True)
+    _label_dataset(client, f'{refs["project_id"]}.{refs["dataset_id"]}')
 
     index_state = bigquery.Table(
         refs["index_state"],
@@ -346,6 +355,7 @@ def run_query(client, query, parameters=None):
 
     job_config = bigquery.QueryJobConfig(
         query_parameters=parameters or [],
+        labels={'app': 'gee-cog-stats'},
     )
     return client.query(query, job_config=job_config).result()
 
@@ -533,6 +543,7 @@ def load_staging_table(client, refs, source_path, staging_table_id):
         skip_leading_rows=1,
         autodetect=True,
         write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+        labels={'app': 'gee-cog-stats'},
     )
     with open(source_path, 'rb') as f:
         load_job = client.load_table_from_file(f, destination, job_config=job_config)
