@@ -6,7 +6,7 @@ If you have created a COG back GEE asset, and requested statistics, this project
 
 - `uv`
 - Python 3.9 or newer
-- Google Cloud CLI tools, including `gcloud` and `gsutil`
+- Google Cloud CLI tools for local authentication and deployment
 - Access to `gs://earthengine-stats/providers/<publisher_id>/`
 
 ## Usage
@@ -32,10 +32,9 @@ Because `download.py` includes a uv shebang, you can also run it directly:
 The script will:
 
 1. Check that you are logged in to Google Cloud.
-2. Download `gs://earthengine-stats/providers/<publisher_id>/index.txt` to `data/<publisher_id>/index.txt`.
-3. Download each statistics file listed in `index.txt` into `data/<publisher_id>/`.
-4. Combine the downloaded `earthengine_stats*` files into `data/<publisher_id>-combined.csv`.
-5. Sort the combined CSV and expand the `Dataset` and `Interval` columns into more specific fields.
+2. Read `gs://earthengine-stats/providers/<publisher_id>/index.txt` and save a copy to `data/<publisher_id>/index.txt`.
+3. Stream each listed `earthengine_stats*` file from GCS into `data/<publisher_id>-combined.csv`.
+4. Sort the combined CSV and expand the `Dataset` and `Interval` columns into more specific fields.
 
 If you are not already logged in, the script runs:
 
@@ -43,7 +42,7 @@ If you are not already logged in, the script runs:
 gcloud auth login
 ```
 
-Downloaded files are skipped when they already exist locally, so it is safe to rerun the script for the same publisher ID.
+The script rebuilds the combined CSV from the current GCS index on each run, so it is safe to rerun for the same publisher ID.
 
 ## Pushing to BigQuery
 

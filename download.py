@@ -8,12 +8,12 @@
 # ///
 
 import argparse
+from contextlib import contextmanager
 import os
 import re
 import subprocess
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 def parse_args():
@@ -29,21 +29,38 @@ def parse_args():
         action='store_true',
         help='Skip interactive gcloud auth (use when running in CI/cloud with a pre-configured service account)',
     )
-    parser.add_argument(
-        '--cache-bucket',
-        metavar='BUCKET/PREFIX',
-        help='GCS path prefix for caching downloaded files, e.g. wri-lcl-logs/gee-cog-stats',
-    )
-    parser.add_argument(
-        '--max-workers',
-        type=int,
-        default=5,
-        help='Number of parallel download workers (default: 5)',
-    )
     return parser.parse_args()
 
 
 _SHELL = sys.platform == 'win32'
+
+
+def format_duration(seconds):
+    if seconds < 60:
+        return f'{seconds:.1f}s'
+
+    minutes, remaining_seconds = divmod(seconds, 60)
+    if minutes < 60:
+        return f'{int(minutes)}m {remaining_seconds:.1f}s'
+
+    hours, remaining_minutes = divmod(minutes, 60)
+    return f'{int(hours)}h {int(remaining_minutes)}m {remaining_seconds:.1f}s'
+
+
+@contextmanager
+def timer(label):
+    start = time.perf_counter()
+    print(f'{label}...')
+    try:
+        yield
+    except Exception:
+        elapsed = time.perf_counter() - start
+        print(f'{label} failed after {format_duration(elapsed)}')
+        raise
+    finally:
+        if sys.exc_info()[0] is None:
+            elapsed = time.perf_counter() - start
+            print(f'{label} completed in {format_duration(elapsed)}')
 
 
 def gcloud_login():
@@ -67,85 +84,87 @@ def gcloud_login():
             sys.exit(1)
 
 
-def download_index(publisher_id):
-    os.makedirs(f'./data/{publisher_id}', exist_ok=True)
-    index_path = f'gs://earthengine-stats/providers/{publisher_id}/index.txt'
-    local_path = f'./data/{publisher_id}/index.txt'
+def parse_gs_uri(uri):
+    if not uri.startswith('gs://'):
+        raise ValueError(f'Invalid GCS URI "{uri}". Expected gs://BUCKET/OBJECT')
+
+    bucket_name, _, blob_name = uri[5:].partition('/')
+    if not bucket_name or not blob_name:
+        raise ValueError(f'Invalid GCS URI "{uri}". Expected gs://BUCKET/OBJECT')
+
+    return bucket_name, blob_name
+
+
+def source_blob(storage_client, uri):
+    bucket_name, blob_name = parse_gs_uri(uri)
+    return storage_client.bucket(bucket_name).blob(blob_name)
+
+
+def retry(operation, description):
     for attempt in range(3):
         try:
-            subprocess.run(['gcloud', 'storage', 'cp', index_path, local_path], check=True, shell=_SHELL, timeout=15)
-            return
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            os.remove(local_path) if os.path.exists(local_path) else None
+            return operation()
+        except Exception as e:
             if attempt == 2:
-                raise
+                raise RuntimeError(f'Failed to {description}: {e}') from e
             time.sleep(2 ** attempt)
 
 
-def download_single_file(publisher_id, line, gcs_client=None, cache_prefix=None):
-    line = line.strip()
-    if not line:
-        return None
+def download_index(publisher_id, storage_client):
+    os.makedirs(f'./data/{publisher_id}', exist_ok=True)
+    index_path = f'gs://earthengine-stats/providers/{publisher_id}/index.txt'
+    local_path = f'./data/{publisher_id}/index.txt'
 
-    file = line.split('/')[-1]
-    file_path = f'./data/{publisher_id}/{file}'
+    index_text = retry(
+        lambda: source_blob(storage_client, index_path).download_as_text(),
+        f'download {index_path}',
+    )
+    with open(local_path, 'w') as f:
+        f.write(index_text)
 
-    gcs_blob = None
-    if gcs_client and cache_prefix:
-        bucket_name, _, prefix = cache_prefix.partition('/')
-        blob_name = f'{prefix}/{publisher_id}/{file}' if prefix else f'{publisher_id}/{file}'
-        gcs_blob = gcs_client.bucket(bucket_name).blob(blob_name)
-        if gcs_blob.exists():
-            gcs_blob.download_to_filename(file_path)
-            return f'{file} loaded from cache'
-    elif os.path.exists(file_path):
-        return f'{file} already exists'
-
-    for attempt in range(3):
-        try:
-            subprocess.run(['gcloud', 'storage', 'cp', line, f'./data/{publisher_id}/'], check=True, shell=_SHELL, timeout=15)
-            if gcs_blob:
-                gcs_blob.upload_from_filename(file_path)
-            return f'Downloaded {line}'
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            os.remove(file_path) if os.path.exists(file_path) else None
-            if attempt == 2:
-                return f'Failed to download {line}: {e}'
-            time.sleep(2 ** attempt)  # 1s, 2s
+    lines = [line.strip() for line in index_text.splitlines() if line.strip()]
+    print(f'Loaded index with {len(lines)} file(s)')
+    return lines
 
 
-def download_files(publisher_id, max_workers=5, gcs_client=None, cache_prefix=None):
-    with open(f'./data/{publisher_id}/index.txt', 'r') as f:
-        lines = [line.strip() for line in f if line.strip()]
+def append_source_file(storage_client, uri, outfile, include_header):
+    blob = source_blob(storage_client, uri)
+    start_pos = outfile.tell()
 
-    failures = []
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_line = {
-            executor.submit(download_single_file, publisher_id, line, gcs_client, cache_prefix): line
-            for line in lines
-        }
-        for future in as_completed(future_to_line):
-            result = future.result()
-            if result:
-                print(result)
-                if result.startswith('Failed'):
-                    failures.append(result)
+    def append():
+        outfile.seek(start_pos)
+        outfile.truncate()
+        with blob.open('rt') as infile:
+            for line_number, line in enumerate(infile):
+                if not include_header and line_number == 0 and line.startswith('Interval'):
+                    continue
+                outfile.write(line)
 
-    return failures
+    retry(append, f'stream {uri}')
 
 
-def combine_files(publisher_id, combined_filepath):
-    with open(combined_filepath, 'w') as outfile:
-        file_count = 0
-        for file in os.listdir(f'./data/{publisher_id}'):
-            if file.startswith('earthengine_stats'):
-                with open(f'./data/{publisher_id}/{file}', 'r') as infile:
-                    file_count += 1
-                    for line in infile:
-                        if file_count > 1 and line.startswith('Interval'):
-                            continue
-                        outfile.write(line)
+def combine_files(source_uris, storage_client, combined_filepath):
+    tmp_filepath = f'{combined_filepath}.tmp'
+    try:
+        with open(tmp_filepath, 'w') as outfile:
+            file_count = 0
+            for uri in source_uris:
+                filename = uri.rstrip('/').split('/')[-1]
+                if not filename.startswith('earthengine_stats'):
+                    continue
+
+                append_source_file(storage_client, uri, outfile, include_header=(file_count == 0))
+                file_count += 1
+                print(f'Added {uri}')
+
+            if file_count == 0:
+                raise RuntimeError('No earthengine_stats files found in index')
+
+        os.replace(tmp_filepath, combined_filepath)
         print(f'Combined {file_count} files into {combined_filepath}')
+    except Exception:
+        os.remove(tmp_filepath) if os.path.exists(tmp_filepath) else None
+        raise
 
 
 def sort_file(combined_filepath):
@@ -200,21 +219,25 @@ if __name__ == '__main__':
     args = parse_args()
     combined_filepath = f'./data/{args.publisher_id}-combined.csv'
 
-    if not args.no_auth:
-        gcloud_login()
+    with timer('Total run'):
+        if not args.no_auth:
+            with timer('Checking Google Cloud auth'):
+                gcloud_login()
 
-    gcs_client = None
-    if args.cache_bucket:
         from google.cloud import storage as gcs
-        gcs_client = gcs.Client()
 
-    download_index(args.publisher_id)
-    failures = download_files(args.publisher_id, args.max_workers, gcs_client, args.cache_bucket)
-    if failures:
-        print(f'{len(failures)} file(s) failed to download — aborting.')
-        sys.exit(1)
-    combine_files(args.publisher_id, combined_filepath)
-    sort_file(combined_filepath)
+        with timer('Creating GCS client'):
+            gcs_client = gcs.Client()
 
-    if args.bigquery:
-        push_to_bigquery(combined_filepath, args.bigquery)
+        with timer('Loading source index'):
+            source_uris = download_index(args.publisher_id, gcs_client)
+
+        with timer('Combining source files'):
+            combine_files(source_uris, gcs_client, combined_filepath)
+
+        with timer('Sorting combined CSV'):
+            sort_file(combined_filepath)
+
+        if args.bigquery:
+            with timer('Loading BigQuery table'):
+                push_to_bigquery(combined_filepath, args.bigquery)
